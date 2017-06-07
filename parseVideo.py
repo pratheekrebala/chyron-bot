@@ -133,7 +133,7 @@ while success:
         if 'am' in iscommercial or 'pm' in iscommercial:
             commercial_airing_for = 0
         else: commercial_airing_for += 1
-        # cv2.imshow('frame', image)
+        cv2.imshow('frame', commercialDetect)
 
     # Read chyron every interval period.
     if frameId % multiplier == 0:
@@ -149,6 +149,8 @@ while success:
     
         if len(text) > 4:
             # Text has to be capitalized and show hasn't aired for 10 seconds (based on timestamp in the bottom right corner of the screen.)
+            lines = text.split('\n')
+            if not text.isupper() and lines[0].isupper(): text = lines[0]
             if text.isupper() and commercial_airing_for < 10:
                 text = text.replace('\n', ' ') # multi line chyron
 
