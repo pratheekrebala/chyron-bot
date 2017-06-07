@@ -144,7 +144,7 @@ while success:
 
         # Cleanup non-ascii characters and correct for the letter O which gets incorrectly recognized as a 0
         # TODO: Train tesseract on the chyron font to improve detection.
-        text = text.decode('utf-8')#.encode('ascii',errors='ignore')
+        text = text.encode('ascii',errors='ignore')
         text = re.sub(r'(?![A-Z])?0(?![A-Z])?', 'O', text).replace("'IT", 'TT')
     
         if len(text) > 4:
@@ -156,7 +156,7 @@ while success:
                 print('CHYRON: ' + text)
                 
                 # Update DB & Tweet if required.
-                # updateDB(text, image)
+                updateDB(text, image)
             # Halt if commercial has been detected for 10 consecutive seconds.
             elif commercial_airing_for > 10:
                 print('Commercial has been airing for: ' + str(commercial_airing_for) + ' seconds.')
