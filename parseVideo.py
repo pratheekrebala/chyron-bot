@@ -89,6 +89,8 @@ def sendTweet(current_chyron, image):
     print(temp_path)
     print(api.update_with_media(filename=temp_path, status=current_chyron['text']))
 
+commercial_airing_for = 0
+
 while success:
     frameId = int(round(vidcap.get(1))) #current frame number, rounded b/c sometimes you get frame intervals which aren't integers...this adds a little imprecision but is likely good enough
     success, image = vidcap.read()
@@ -97,18 +99,34 @@ while success:
         lowerThirdStart = dimensions['height'] - int(dimensions['height'] * 0.21)
         lowerThirdEnd = dimensions['height'] - int(dimensions['height'] * 0.09)
         lowerThirdRight = dimensions['width'] - int(dimensions['width'] * 0.15)
-        lowerThirdLeft = int(dimensions['width'] * 0.05)
+        lowerThirdLeft = int(dimensions['width'] * 0.02)
+
+        commercialStart = dimensions['height'] - int(dimensions['height'] * 0.11)
+        commercialEnd = dimensions['height'] - int(dimensions['height'] * 0.075)
+        commercialRight = dimensions['width'] - int(dimensions['width'] * 0.043)
+        commercialLeft = dimensions['width'] - int(dimensions['width'] * 0.14)
+    if frameId % (fps * 1) == 0:
+        commercialDetect = image[commercialStart:commercialEnd,commercialLeft:commercialRight]
+        iscommercial = pytesseract.image_to_string(Image.fromarray(commercialDetect)).lower()
+
+        if 'am' in iscommercial or 'pm' in iscommercial:
+            commercial_airing_for = 0
+        else: commercial_airing_for += 1
+        # cv2.imshow('frame', image)
+
     if frameId % multiplier == 0:
-        #cv2.imshow('frame', image)
         lowerThird = image[lowerThirdStart:lowerThirdEnd,lowerThirdLeft:lowerThirdRight]
         text = pytesseract.image_to_string(Image.fromarray(lowerThird))
         text = text.encode('ascii',errors='ignore')
         text = re.sub(r'(?![A-Z])0', 'O', text)
         if len(text) > 4:
-            if text.isupper() and not text.startswith('LASER SPINE INSTITUTE'):
+            #Text has to be capitalized, one edge case handling and show hasn't aired for 10 seconds (based on timestamp in corner of the screen.)
+            if text.isupper() and not text.startswith('LASER SPINE INSTITUTE') and commercial_airing_for < 10:
                 text = text.replace('0N', 'ON').replace('\n', ' ')
                 print('CHYRON: ' + text)
-                updateDB(text, image)
+            elif commercial_airing_for > 10:
+                print('Commercial has been airing for: ' + str(commercial_airing_for) + ' seconds.')
+                #updateDB(text, image)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
