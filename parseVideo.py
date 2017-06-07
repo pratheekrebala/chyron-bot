@@ -1,21 +1,37 @@
 import cv2
 import math
 import numpy as np
-import tesseract
 from PIL import Image
 import pytesseract
-import livestreamer
 import string
+import json
+import streamlink
+from tinydb import TinyDB, Query
+from datetime import datetime, timedelta
+import time
+import tweepy
+from tempfile import mkstemp
+import os
+import re
 
-live_cnn = 'https://www.youtube.com/watch?v=bxGy6ud54BE'
-live_cnn_2 = 'https://www.youtube.com/watch?v=oamvsYd4AEM'
+db = TinyDB('./chyron_db.json')
+
 kellyanne_interview = 'https://www.youtube.com/watch?v=-otxWE6dBxk'
-#streams = livestreamer.streams(live_cnn_2)
+cnn_lots_of_videos = 'https://www.youtube.com/watch?v=YklGnu5NoE0'
 
-#Load Video
+livestream = ''
+streams = streamlink.streams(livestream)
+
+with open('credentials.json') as data_file:    
+    creds = json.load(data_file)
+
+auth = tweepy.OAuthHandler(creds['consumer_key'], creds['consumer_secret'])
+auth.set_access_token(creds['access_key'], creds['access_secret'])
+
+api = tweepy.API(auth)
 
 videoFile = "test.mp4"
-vidcap = cv2.VideoCapture("test.mp4")#streams['360p'].url)
+vidcap = cv2.VideoCapture(streams['720p'].url)
 success,image = vidcap.read()
 
 # Get Video every five seconds (assume 30 fps)
@@ -30,34 +46,69 @@ nonletter = allchars.translate(allchars, string.letters)
 
 dimensions = None
 
+chyron_table = db.table('chyrons')
+instance_table = db.table('instances')
+
+def getCurrentTimestamp():
+    return time.mktime(datetime.now().timetuple())
+
+def createChyron(text):
+    current_chyron = {'text': text, 'first_seen': getCurrentTimestamp(), 'tweeted': False, 'tweeted_at': None}
+    return chyron_table.insert(current_chyron)
+
+def searchOrCreateChyron(text):
+    Chyron = Query()
+    chyrons = chyron_table.search(Chyron.text == text)
+    if not chyrons:
+        #Chyron doesn't exist creating now.
+        return createChyron(text)
+    else: return chyrons[0].eid
+
+def updateDB(text, image):
+    chyron_id = searchOrCreateChyron(text)
+    current_instance = {'chyron_id':chyron_id, 'seen': getCurrentTimestamp()}
+    instance_table.insert(current_instance)
+    shouldTweet(chyron_id, image)
+
+def shouldTweet(chyron_id, image):
+    Chyron = Query()
+    current_chyron = chyron_table.get(eid=chyron_id)
+    last_24_hrs = time.mktime((datetime.now() - timedelta(days=1)).timetuple())
+    last_3_mins = time.mktime((datetime.now() - timedelta(minutes=3)).timetuple())
+    instances = instance_table.search((Chyron.chyron_id==chyron_id) & (Chyron.seen > last_3_mins)) # Get all instances in last 24 hours.
+    if len(instances) > 5 and (current_chyron["tweeted"] == False or current_chyron['tweeted_at'] < last_24_hrs):
+        sendTweet(current_chyron, image)
+        current_chyron['tweeted'] = True
+        current_chyron['tweeted_at'] = getCurrentTimestamp()
+        chyron_table.update(current_chyron, eids=[chyron_id])
+
+def sendTweet(current_chyron, image):
+    print('Tweeting: ' + current_chyron['text'])
+    temp_path = './temp.jpg'
+    cv2.imwrite(temp_path, image)
+    print(temp_path)
+    print(api.update_with_media(filename=temp_path, status=current_chyron['text']))
+
 while success:
     frameId = int(round(vidcap.get(1))) #current frame number, rounded b/c sometimes you get frame intervals which aren't integers...this adds a little imprecision but is likely good enough
     success, image = vidcap.read()
-    cv2.imshow('frame', image)
     if frameId == 1:
         dimensions = dict(zip(('height', 'width', 'channels'), image.shape)) 
         lowerThirdStart = dimensions['height'] - int(dimensions['height'] * 0.21)
         lowerThirdEnd = dimensions['height'] - int(dimensions['height'] * 0.09)
         lowerThirdRight = dimensions['width'] - int(dimensions['width'] * 0.15)
         lowerThirdLeft = int(dimensions['width'] * 0.05)
-        #lowerThirdByLine = dimensions['width'] - int(dimensions['width'] * 0.13)
     if frameId % multiplier == 0:
+        #cv2.imshow('frame', image)
         lowerThird = image[lowerThirdStart:lowerThirdEnd,lowerThirdLeft:lowerThirdRight]
-        #lowerThirdInclusive = image[lowerThirdStart:lowerThirdByLine,lowerThirdLeft:lowerThirdRight]
-        #gray = cv2.cvtColor(lowerThird,cv2.COLOR_BGR2RGB)
-        #lower_white = np.array([200,200,200], dtype=np.uint8)
-        #upper_white = np.array([255,255,255], dtype=np.uint8)
-        #mask = cv2.inRange(lowerThird, lower_white, upper_white)
-        #res = cv2.bitwise_and(lowerThird,lowerThird,mask = mask)
-        text = pytesseract.image_to_string(Image.fromarray(lowerThird)).strip(nonletter)
-        lines = text.splitlines()
+        text = pytesseract.image_to_string(Image.fromarray(lowerThird))
+        text = text.encode('ascii',errors='ignore')
+        text = re.sub(r'(?![A-Z])0', 'O', text)
         if len(text) > 4:
-            if '\n' not in text and text.isupper():
-                print('CHYRON:' + text)
-            elif len(lines) > 1:
-                pass
-                #print('BY-LINE:' + lines[1])
-
+            if text.isupper() and not text.startswith('LASER SPINE INSTITUTE'):
+                text = text.replace('0N', 'ON').replace('\n', ' ')
+                print('CHYRON: ' + text)
+                updateDB(text, image)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
