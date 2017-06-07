@@ -120,8 +120,8 @@ while success:
         text = text.encode('ascii',errors='ignore')
         text = re.sub(r'(?![A-Z])0', 'O', text)
         if len(text) > 4:
-            #Text has to be capitalized, one edge case handling and show hasn't aired for 10 seconds (based on timestamp in corner of the screen.)
-            if text.isupper() and not text.startswith('LASER SPINE INSTITUTE') and commercial_airing_for < 10:
+            #Text has to be capitalized and show hasn't aired for 10 seconds (based on timestamp in corner of the screen.)
+            if text.isupper() and commercial_airing_for < 10:
                 text = text.replace('0N', 'ON').replace('\n', ' ')
                 print('CHYRON: ' + text)
             elif commercial_airing_for > 10:
