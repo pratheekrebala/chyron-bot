@@ -49,7 +49,11 @@ def restart():
 
     if not parserProcess.poll():
         # Parser is still alive, probably stalled - kill it.
-        parserProcess.kill()
+        try:
+            parserProcess.kill()
+        except OSError:
+          # silently fail if the subprocess has exited already
+            pass
     else:
         # Parser is already dead. Nothing needs to be done.
         pass
