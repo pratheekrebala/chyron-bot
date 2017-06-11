@@ -5,6 +5,10 @@ import time
 import string
 from datetime import datetime, timedelta
 
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 import cv2
 from PIL import Image
 
@@ -20,10 +24,12 @@ db = TinyDB('./chyron_db.json')
 with open('streams.json') as fp:
     stream_list = json.load(fp)
     streams = streamlink.streams(stream_list['live'])
+    logging.info('Live stream loaded from %s', 'streams.json.')
 
 # Twitter Credentials
 with open('credentials.json') as fp:    
     credentials = json.load(fp)
+    logging.info('Twitter credentials loaded from %s', 'credentials.json.')
 
 # Setup Tweepy
 auth = tweepy.OAuthHandler(credentials['consumer_key'], credentials['consumer_secret'])
@@ -97,10 +103,9 @@ def shouldTweet(chyron_id, image):
 # TODO: Delete temp file after published - or better yet, find way to update status from buffer.
 
 def sendTweet(current_chyron, image):
-    print('Tweeting: ' + current_chyron['text'])
+    logging.info('Tweeting: %s', current_chyron['text'])
     temp_path = './temp.jpg'
     cv2.imwrite(temp_path, image)
-    print(temp_path)
     print(api.update_with_media(filename=temp_path, status=current_chyron['text']))
 
 # Counter to keep track of commercial length
@@ -118,13 +123,14 @@ while success:
         lowerThirdStart = dimensions['height'] - int(dimensions['height'] * 0.21)
         lowerThirdEnd = dimensions['height'] - int(dimensions['height'] * 0.09)
         lowerThirdRight = dimensions['width'] - int(dimensions['width'] * 0.15)
-        lowerThirdLeft = int(dimensions['width'] * 0.02)
+        lowerThirdLeft = int(dimensions['width'] * 0.057)
 
         commercialStart = dimensions['height'] - int(dimensions['height'] * 0.11)
         commercialEnd = dimensions['height'] - int(dimensions['height'] * 0.075)
         commercialRight = dimensions['width'] - int(dimensions['width'] * 0.043)
         commercialLeft = dimensions['width'] - int(dimensions['width'] * 0.14)
     
+        logging.info('First frame received. Chyron location identified.')
     # Process each second to keep track of commercials.
     if frameId % (fps * 1) == 0:
         commercialDetect = image[commercialStart:commercialEnd,commercialLeft:commercialRight]
@@ -133,7 +139,6 @@ while success:
         if 'am' in iscommercial or 'pm' in iscommercial:
             commercial_airing_for = 0
         else: commercial_airing_for += 1
-        cv2.imshow('frame', commercialDetect)
 
     # Read chyron every interval period.
     if frameId % multiplier == 0:
@@ -141,6 +146,8 @@ while success:
         # Extract chyron image and text using Tesseract
         lowerThird = image[lowerThirdStart:lowerThirdEnd,lowerThirdLeft:lowerThirdRight]
         text = pytesseract.image_to_string(Image.fromarray(lowerThird))
+
+        # cv2.imshow('frame', lowerThird)
 
         # Cleanup non-ascii characters and correct for the letter O which gets incorrectly recognized as a 0
         # TODO: Train tesseract on the chyron font to improve detection.
@@ -150,21 +157,19 @@ while success:
         if len(text) > 4:
             # Text has to be capitalized and show hasn't aired for 10 seconds (based on timestamp in the bottom right corner of the screen.)
             lines = text.split('\n')
-            if not text.isupper() and lines[0].isupper(): text = lines[0]
+            if not text.isupper() and lines[0].isupper(): text = lines[0] # This handles the new condensed chyrons that span multiple lines.
             if text.isupper() and commercial_airing_for < 10:
                 text = text.replace('\n', ' ') # multi line chyron
 
                 # Log chyron
-                print('CHYRON: ' + text)
-                
+                logging.info('CHYRON: %s', text)
                 # Update DB & Tweet if required.
                 updateDB(text, image)
-            # Halt if commercial has been detected for 10 consecutive seconds.
-            elif commercial_airing_for > 10:
-                print('Commercial has been airing for: ' + str(commercial_airing_for) + ' seconds.')
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
-
+            # Halt if commercial has been detected for 40 consecutive seconds.
+            elif commercial_airing_for > 40:
+                logging.info('Commercial has been airing for: %d seconds.', commercial_airing_for)
+            else: logging.info('No Chyron Detected')
+        else: logging.info('No Chyron Detected')
 # Release Video capture and kill any open openCV windows.
 vidcap.release()
 cv2.destroyAllWindows()
