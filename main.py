@@ -3,6 +3,7 @@ import subprocess
 from threading  import Thread
 import threading
 import time
+import os
 
 from Queue import Queue, Empty
 
@@ -14,7 +15,7 @@ last_alive = time.time()
 
 def startParser():
     logging.info('Starting chyron detector.')
-    process = subprocess.Popen(['python', './parseVideo.py'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    process = subprocess.Popen('exec python ./parseVideo.py', stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True)
     return process
 
 def checkOutput():
@@ -34,11 +35,11 @@ def monitorParser():
             stalled_for = time.time() - last_alive
             #logging.info('No output for %f', stalled_for)
 
-            if stalled_for > 10:
+            if stalled_for > 40:
                 #Process has stalled for longer than 10 seconds.
                 logging.info('Parser stalled. Restarting')
                 restart()
-                time.sleep(10)
+		time.sleep(10)
         else: # got line
             logging.info('Got line: %s', line)
             last_alive = time.time()
@@ -47,15 +48,11 @@ def monitorParser():
 def restart():
     global parserProcess
 
-    if not parserProcess.poll():
         # Parser is still alive, probably stalled - kill it.
-        try:
-            parserProcess.kill()
-        except OSError:
+    try:
+	parserProcess.kill()
+    except OSError:
           # silently fail if the subprocess has exited already
-            pass
-    else:
-        # Parser is already dead. Nothing needs to be done.
         pass
     start(restart=True) # Restart the parser.
 

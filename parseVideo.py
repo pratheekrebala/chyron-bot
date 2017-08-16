@@ -4,18 +4,57 @@ import json
 import time
 import string
 from datetime import datetime, timedelta
+import numpy
+import signal
+import sys
+
+
+from imutils.video import WebcamVideoStream
+from imutils.video import FPS
+import argparse
+import imutils
 
 import logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 import cv2
-from PIL import Image
+from PIL import Image, ImageFilter
 
 import streamlink
 import pytesseract
 from tinydb import TinyDB, Query
 import tweepy
+
+isproduction = False
+liveTest = False
+drawBoundaries = True
+writeImages = True
+network = "FNC"
+
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)-15s %(levelname)-8s %(message)s")
+
+logger = logging.getLogger('')
+
+#logger.addHandler(logging.StreamHandler(sys.stdout))
+logger.addHandler(logging.FileHandler('./networks/' + network + '/output.log', mode='a+'))
+
+logger = logging.getLogger(__name__)
+
+def exit_gracefully(signum, frame):
+    # Release Video capture and kill any open openCV windows.
+    fps_m.stop()
+    logging.info("Elasped time: {:.2f}".format(fps_m.elapsed()))
+    logging.info("Approx. FPS: {:.2f}".format(fps_m.fps()))
+    
+    logging.info("Stopping stream and OpenCV")
+    fvs.stop()
+    cv2.destroyAllWindows()
+
+    sys.exit(1)
+
+    signal.signal(signal.SIGINT, exit_gracefully)
+
+original_sigint = signal.getsignal(signal.SIGINT)
+signal.signal(signal.SIGINT, exit_gracefully)
 
 # Keeps track of airings and chyrons in a json file.
 db = TinyDB('./chyron_db.json')
@@ -23,7 +62,7 @@ db = TinyDB('./chyron_db.json')
 # Lookup Stream
 with open('streams.json') as fp:
     stream_list = json.load(fp)
-    streams = streamlink.streams(stream_list['live'])
+    #streams = streamlink.streams(stream_list['live'])
     logging.info('Live stream loaded from %s', 'streams.json.')
 
 # Twitter Credentials
@@ -38,13 +77,20 @@ auth.set_access_token(credentials['access_key'], credentials['access_secret'])
 api = tweepy.API(auth)
 
 # videoFile = "test.mp4"
-
 # Load Stream and pass onto openCV
-vidcap = cv2.VideoCapture(streams['720p'].url)
-success,image = vidcap.read()
+
+logging.info("[INFO] starting video file thread...")
+fvs = WebcamVideoStream(stream_list[network]).start()
+time.sleep(1.0)
+ 
+# start the FPS timer
+fps_m = FPS().start()
+
+#success,image = vidcap.read()
 
 # Get Video every five seconds (assuming 30 fps)
-seconds = 5
+seconds = 3
+commercialSeconds = 2
 fps = 30 #vidcap.get(cv2.CAP_PROP_FPS) # Gets the frames per second - still testing this.
 multiplier = fps * seconds
 
@@ -108,68 +154,168 @@ def sendTweet(current_chyron, image):
     cv2.imwrite(temp_path, image)
     print(api.update_with_media(filename=temp_path, status=current_chyron['text']))
 
+def getDimensions(image):
+    #Take dimensions, read dimensions file and output three arrays
+    # (incl image.)
+
+    dimensions = dict(zip(('height', 'width', 'channels'), image.shape))
+
+    with open('dimensions.json', 'r') as fp:
+        locations = json.load(fp)[network]
+        chyron = {
+            "start": dimensions['height'] - int(dimensions['height'] * locations['chyron']['dimensions']['x1']),
+            "end": dimensions['height'] - int(dimensions['height'] * locations['chyron']['dimensions']['x2']),
+            "right": dimensions['width'] - int(dimensions['width'] * locations['chyron']['dimensions']['y1']),
+            "left": dimensions['width'] - int(dimensions['width'] * locations['chyron']['dimensions']['y2']),
+        }
+
+        commercial = {
+            "start": dimensions['height'] - int(dimensions['height'] * locations['commercial']['dimensions']['x1']),
+            "end": dimensions['height'] - int(dimensions['height'] * locations['commercial']['dimensions']['x2']),
+            "right": dimensions['width'] - int(dimensions['width'] * locations['commercial']['dimensions']['y1']),
+            "left": dimensions['width'] - int(dimensions['width'] * locations['commercial']['dimensions']['y2']),
+        }
+
+        imageDim = {
+            "start": dimensions['height'] - int(dimensions['height'] * locations['image']['dimensions']['x1']),
+            "end": dimensions['height'] - int(dimensions['height'] * locations['image']['dimensions']['x2']),
+            "right": dimensions['width'] - int(dimensions['width'] * locations['image']['dimensions']['y1']),
+            "left": dimensions['width'] - int(dimensions['width'] * locations['image']['dimensions']['y2']),
+        }
+
+        return (chyron, commercial, imageDim)
+
+
 # Counter to keep track of commercial length
 commercial_airing_for = 0
+commercialDetect =  None
 
+def sharpenImage(img):
+    #img = cv2.medianBlur(img,5)
+    #img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    #img = cv2.adaptiveThreshold(img,255,cv2.ADAPTIVE_THRESH_MEAN_C,\
+            #cv2.THRESH_BINARY,11,2)
+    kernel_sharpen_3 = numpy.array([[-1,-1,-1,-1,-1],
+                             [-1,2,2,2,-1],
+                             [-1,2,8,2,-1],
+                             [-1,2,2,2,-1],
+                             [-1,-1,-1,-1,-1]]) / 7.0
+    #img = cv2.filter2D(img, -1, kernel_sharpen_3)
+
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+
+    # define range of white color in HSV
+    # change it according to your need !
+    lower_white = numpy.array([0,0,200], dtype=numpy.uint8)
+    upper_white = numpy.array([180,255,255], dtype=numpy.uint8)
+
+    # Threshold the HSV image to get only white colors
+    mask = cv2.inRange(hsv, lower_white, upper_white)
+    # Bitwise-AND mask and original image
+    img = cv2.bitwise_and(img,img, mask=mask)
+
+    return img
+
+
+def extractBlack(img):
+
+    # Try to sharpen image, not using for now.
+
+    kernel_sharpen_3 = numpy.array([[-1,-1,-1,-1,-1],
+                             [-1,2,2,2,-1],
+                             [-1,2,8,2,-1],
+                             [-1,2,2,2,-1],
+                             [-1,-1,-1,-1,-1]]) / 8.0
+
+    #img = cv2.filter2D(img, -1, kernel_sharpen_3)
+    #(thresh, img) = cv2.threshold(img, 128, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    #img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    #img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+
+    lower_black = numpy.array([0,0,0], dtype=numpy.uint8)
+    upper_black = numpy.array([180,255,30], dtype=numpy.uint8)
+    # Threshold the HSV image to get only black colors
+    mask = cv2.inRange(hsv, lower_black, upper_black)
+    # Bitwise-AND mask and original image
+    # img = cv2.bitwise_not(img,img, mask=mask)
+
+
+    return mask
+    
 # Main loop - if file read is successful, might crash if stream stalls. Need to handle restarts.
-while success:
+frameId = 0
+while not fvs.stopped:
     
-    frameId = int(round(vidcap.get(1)))
-    success, image = vidcap.read()
+    frameId += 1
+    image = fvs.read()
+    
+    image = cv2.resize(image, (720, 480))
+        
+    if liveTest: chyronDim, commercialDim, imageDim = getDimensions(image)
 
-    # Setup dimensions based on current resolution using the first frame.
     if frameId == 1:
-        dimensions = dict(zip(('height', 'width', 'channels'), image.shape)) 
-        lowerThirdStart = dimensions['height'] - int(dimensions['height'] * 0.21)
-        lowerThirdEnd = dimensions['height'] - int(dimensions['height'] * 0.09)
-        lowerThirdRight = dimensions['width'] - int(dimensions['width'] * 0.15)
-        lowerThirdLeft = int(dimensions['width'] * 0.057)
-
-        commercialStart = dimensions['height'] - int(dimensions['height'] * 0.11)
-        commercialEnd = dimensions['height'] - int(dimensions['height'] * 0.075)
-        commercialRight = dimensions['width'] - int(dimensions['width'] * 0.043)
-        commercialLeft = dimensions['width'] - int(dimensions['width'] * 0.14)
-    
+        chyronDim, commercialDim, imageDim = getDimensions(image)
         logging.info('First frame received. Chyron location identified.')
-    # Process each second to keep track of commercials.
-    if frameId % (fps * 1) == 0:
-        commercialDetect = image[commercialStart:commercialEnd,commercialLeft:commercialRight]
-        iscommercial = pytesseract.image_to_string(Image.fromarray(commercialDetect)).lower()
 
-        if 'am' in iscommercial or 'pm' in iscommercial:
+    image = image[imageDim['start']:imageDim['end'],imageDim['right']:imageDim['left']]
+    # Setup dimensions based on current resolution using the first frame.
+    # Process each second to keep track of commercials.
+    if frameId % (fps * commercialSeconds) == 0:
+        commercialDetect = image[commercialDim['start']:commercialDim['end'],commercialDim['left']:commercialDim['right']]
+        commercialDetect = sharpenImage(commercialDetect)
+        iscommercial = pytesseract.image_to_string(Image.fromarray(commercialDetect)).lower()
+        
+        if 'am' in iscommercial or 'pm' in iscommercial or 'chan' in iscommercial or 'msn' in iscommercial or 'can' in iscommercial or 'caw' in iscommercial:
             commercial_airing_for = 0
         else: commercial_airing_for += 1
 
     # Read chyron every interval period.
     if frameId % multiplier == 0:
-        
+        lowerThird = image[chyronDim['start']:chyronDim['end'],chyronDim['right']:chyronDim['left']]
+        if stream_list['sharpen'][network]: lowerThird = sharpenImage(lowerThird)
         # Extract chyron image and text using Tesseract
-        lowerThird = image[lowerThirdStart:lowerThirdEnd,lowerThirdLeft:lowerThirdRight]
         text = pytesseract.image_to_string(Image.fromarray(lowerThird))
 
-        # cv2.imshow('frame', lowerThird)
+        if drawBoundaries:
+            cv2.rectangle(image, (chyronDim['left'], chyronDim['start']), (chyronDim['right'], chyronDim['end']), (49,163,84), 2)
+            cv2.rectangle(image, (commercialDim['left'], commercialDim['start']), (commercialDim['right'], commercialDim['end']), (255,255,0), 2)
+        
 
         # Cleanup non-ascii characters and correct for the letter O which gets incorrectly recognized as a 0
         # TODO: Train tesseract on the chyron font to improve detection.
         text = text.encode('ascii',errors='ignore')
         text = re.sub(r'(?![A-Z])?0(?![A-Z])?', 'O', text).replace("'IT", 'TT')
-    
+        text = re.sub(r'\s+', ' ', text).strip()
+        text = re.sub(r'_', '', text)
+        text = re.sub('^[^a-zA-z]*|[^a-zA-Z]*$','', text)
+        text = text.strip()
+        chyron = None
         if len(text) > 4:
             # Text has to be capitalized and show hasn't aired for 10 seconds (based on timestamp in the bottom right corner of the screen.)
             lines = text.split('\n')
             if not text.isupper() and lines[0].isupper(): text = lines[0] # This handles the new condensed chyrons that span multiple lines.
-            if text.isupper() and commercial_airing_for < 10:
+            if text.isupper() and commercial_airing_for < 40:
                 text = text.replace('\n', ' ') # multi line chyron
-
+                chyron = text
                 # Log chyron
                 logging.info('CHYRON: %s', text)
                 # Update DB & Tweet if required.
-                updateDB(text, image)
+                if isproduction: updateDB(text, image)
             # Halt if commercial has been detected for 40 consecutive seconds.
             elif commercial_airing_for > 40:
                 logging.info('Commercial has been airing for: %d seconds.', commercial_airing_for)
             else: logging.info('No Chyron Detected')
         else: logging.info('No Chyron Detected')
-# Release Video capture and kill any open openCV windows.
-vidcap.release()
-cv2.destroyAllWindows()
+
+        if writeImages:
+            #lowerThird = imutils.skeletonize(cv2.cvtColor(lowerThird, cv2.COLOR_BGR2GRAY), size=(5,5))
+            cv2.imwrite('./networks/' + network + '/chyron.jpeg', lowerThird)
+            cv2.imwrite('./networks/' + network + '/frame.jpeg', image)
+            cv2.imwrite('./networks/' + network + '/commercial.jpeg', commercialDetect)
+            chyron_meta = {'chyron': chyron, 'commercial': commercial_airing_for, 'chyron_src': text, 'commercial_src': iscommercial}
+            with open('./networks/' + network + '/meta.json', 'w') as outfile:
+                json.dump(chyron_meta, outfile)
+
+exit_gracefully()
