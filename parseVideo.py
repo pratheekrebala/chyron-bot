@@ -9,7 +9,7 @@ import signal
 import sys
 
 
-from imutils.video import WebcamVideoStream
+from imutils.video import WebcamVideoStream, VideoStream
 from imutils.video import FPS
 import argparse
 import imutils
@@ -25,12 +25,12 @@ from tinydb import TinyDB, Query
 import tweepy
 
 isproduction = False
-liveTest = False
+liveTest = True
 drawBoundaries = True
 writeImages = True
 network = "FNC"
 
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)-15s %(levelname)-8s %(message)s")
+logging.basicConfig(level=logging.NOTSET, format="%(asctime)-15s %(levelname)-8s %(message)s")
 
 logger = logging.getLogger('')
 
@@ -62,7 +62,7 @@ db = TinyDB('./chyron_db.json')
 # Lookup Stream
 with open('streams.json') as fp:
     stream_list = json.load(fp)
-    #streams = streamlink.streams(stream_list['live'])
+    #streams = streamlink.streams('https://www.youtube.com/watch?v=Q4sCA3QFqT8')
     logging.info('Live stream loaded from %s', 'streams.json.')
 
 # Twitter Credentials
@@ -80,7 +80,7 @@ api = tweepy.API(auth)
 # Load Stream and pass onto openCV
 
 logging.info("[INFO] starting video file thread...")
-fvs = WebcamVideoStream(stream_list[network]).start()
+fvs = VideoStream(stream_list[network]).start()
 time.sleep(1.0)
  
 # start the FPS timer
@@ -195,24 +195,49 @@ def sharpenImage(img):
     #img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     #img = cv2.adaptiveThreshold(img,255,cv2.ADAPTIVE_THRESH_MEAN_C,\
             #cv2.THRESH_BINARY,11,2)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    #gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    
+    #edgeMap = imutils.auto_canny(gray)
+
+    #cv2.imshow("Original", logo)
+    #cv2.imshow("Automatic Edge Map", edgeMap)
+
     kernel_sharpen_3 = numpy.array([[-1,-1,-1,-1,-1],
                              [-1,2,2,2,-1],
                              [-1,2,8,2,-1],
                              [-1,2,2,2,-1],
-                             [-1,-1,-1,-1,-1]]) / 7.0
-    #img = cv2.filter2D(img, -1, kernel_sharpen_3)
+                             [-1,-1,-1,-1,-1]]) / 6.0
+    sharp = cv2.filter2D(gray, -1, kernel_sharpen_3)
 
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    ret,thresh3 = cv2.threshold(sharp,220,255,cv2.THRESH_BINARY)
 
+    (_, cnts, _) = cv2.findContours(img.copy(), cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE)
+
+    img = cv2.drawContours(img,cnts,-1,(255,255,255),3)
+    #(h,s,v) = cv2.split(sharp)
+
+    return img
+    
+    hsv = cv2.cvtColor(img, cv2.COLOR_HSV2BGR)
+    
     # define range of white color in HSV
     # change it according to your need !
-    lower_white = numpy.array([0,0,200], dtype=numpy.uint8)
+    lower_white = numpy.array([0,0,230], dtype=numpy.uint8)
     upper_white = numpy.array([180,255,255], dtype=numpy.uint8)
 
     # Threshold the HSV image to get only white colors
     mask = cv2.inRange(hsv, lower_white, upper_white)
+
     # Bitwise-AND mask and original image
-    img = cv2.bitwise_and(img,img, mask=mask)
+    img = cv2.bitwise_and(img, img, mask=mask)
+    #img = cv2.cvtColor(img, cv2.COLOR_HSV2BGR)
+    
+    return v
+    
+    img = numpy.concatenate((img, sharp, v), axis=0)
+    return img
 
     return img
 
@@ -279,7 +304,7 @@ while not fvs.stopped:
         text = pytesseract.image_to_string(Image.fromarray(lowerThird))
 
         if drawBoundaries:
-            cv2.rectangle(image, (chyronDim['left'], chyronDim['start']), (chyronDim['right'], chyronDim['end']), (49,163,84), 2)
+            cv2.rectangle(image, (chyronDim['left'], chyronDim['start']), (chyronDim['right'], chyronDim['end']), (49,163,84), 3)
             cv2.rectangle(image, (commercialDim['left'], commercialDim['start']), (commercialDim['right'], commercialDim['end']), (255,255,0), 2)
         
 
